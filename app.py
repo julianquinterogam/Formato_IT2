@@ -113,6 +113,11 @@ if len(malas):
     with st.expander("Ver esos NUI"):
         st.dataframe(malas, use_container_width=True)
 
+sin_estado = int(it2["ESTADO"].isna().groupby(it2["NUI_MANTENIMIENTO"]).all().sum())
+if sin_estado:
+    st.warning(f"{sin_estado} NUI vienen sin datos para determinar el estado (campos de revisión vacíos en el 1.5 "
+               "o 'Entrega' vacío/'undefined' en el 2.0); su ESTADO y DECO ESTADO quedan vacíos.")
+
 st.write(f"**{len(it2):,} filas** de **{it2['NUI_MANTENIMIENTO'].nunique():,} NUI** con mantenimiento, ordenadas por NUI.")
 st.dataframe(it2.head(100), use_container_width=True)
 
