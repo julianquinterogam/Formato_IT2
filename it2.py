@@ -1,5 +1,7 @@
 """Lógica del formato IT2 Mantenimientos (Paso 1: carga, filtro por mes y cruce con la base)."""
+import datetime
 import re
+import unicodedata
 import zlib
 from io import BytesIO
 
@@ -83,6 +85,20 @@ HOMOLOGACION_TIPO_UC = {1: 5, 2: 6, 3: 7, 4: 10, 5: 14, 6: 21, 7: 21, 8: 21, 9: 
 DECO_TIPO_MTTO = {"Preventivo": 1, "Correctivo": 2}
 DECO_ESTADO = {"Funcional": 1, "No Funcional": 2}
 CAMPOS_ESTADO_15 = ["estadoGabinete", "paneles", "puestaTierra", "inversor", "bateria", "protecciones", "mppt", "soporte"]
+# Campo del listado 1.5 que describe el estado de cada elemento (TIPO_UC de la base)
+CAMPO_ESTADO_POR_TIPO_UC = {
+    1: "paneles",          # PANEL
+    2: "inversor",         # INVERSOR
+    3: "mppt",             # CONTROLADOR
+    4: "bateria",          # BATERIAS
+    5: "soporte",          # POSTE
+    6: "paneles",          # RED PANEL
+    7: "estadoGabinete",   # GABINETE
+    8: "estadoGabinete",   # RED BATERIA GABINETE
+    9: "puestaTierra",     # PUESTA TIERRA
+    10: "protecciones",    # RED DOMICILIARIA
+    11: "protecciones",    # MEDIDOR
+}
 
 
 def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
@@ -99,30 +115,74 @@ def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
     return tipo_15.where(es_15, tipo_20)
 
 
-def estado_mantenimiento(df: pd.DataFrame) -> pd.Series:
-    """1.5: No Funcional si alguno de los 8 campos de revisión empieza por 'Malo'; Funcional si hay al menos un
-    'Bueno' y ningún 'Malo' ('No Tiene', 'No Existe' y vacíos se ignoran). Sin ningún dato -> vacío.
-    2.0: columna 'Entrega' (Funcional / No Funcional); cualquier otro valor -> vacío."""
-    # 1.5
-    campos = [c for c in CAMPOS_ESTADO_15 if c in df.columns]
-    if campos:
-        v = df[campos].apply(lambda col: col.astype("string").str.strip().str.lower())
-        hay_malo = v.apply(lambda col: col.str.startswith("malo", na=False)).any(axis=1)
-        hay_bueno = v.apply(lambda col: col.eq("bueno")).any(axis=1)
-        est_15 = pd.Series(pd.NA, index=df.index, dtype="string")
-        est_15[hay_bueno] = "Funcional"
-        est_15[hay_malo] = "No Funcional"
-    else:
-        est_15 = pd.Series(pd.NA, index=df.index, dtype="string")
-    # 2.0
+def _a_estado(col: pd.Series) -> pd.Series:
+    """Listado 1.5: 'Bueno' -> Funcional. Todo lo demás ('Malo...', 'No Tiene', 'No Existe' o vacío) -> No Funcional."""
+    v = col.astype("string").str.strip().str.lower()
+    est = pd.Series("No Funcional", index=col.index, dtype="string")
+    est[v == "bueno"] = "Funcional"
+    return est
+
+
+def estado_entrega_20(df: pd.DataFrame) -> pd.Series:
+    """Listado 2.0: solo hay un estado general, la columna 'Entrega' (Funcional / No Funcional)."""
+    est = pd.Series(pd.NA, index=df.index, dtype="string")
     if "Entrega" in df.columns:
         e = df["Entrega"].astype("string").str.strip().str.lower()
-        est_20 = pd.Series(pd.NA, index=df.index, dtype="string")
-        est_20[e == "funcional"] = "Funcional"
-        est_20[e == "no funcional"] = "No Funcional"
-    else:
-        est_20 = pd.Series(pd.NA, index=df.index, dtype="string")
-    return est_15.where(df["VERSION"] == "1.5", est_20)
+        est[e == "funcional"] = "Funcional"
+        est[e == "no funcional"] = "No Funcional"
+    return est
+
+
+def estado_por_fila(df: pd.DataFrame) -> pd.Series:
+    """df: filas ya expandidas con la base. 1.5: cada elemento toma el estado del campo que le corresponde
+    (CAMPO_ESTADO_POR_TIPO_UC). 2.0: todas las filas del NUI toman el estado general de 'Entrega'."""
+    est = pd.DataFrame({c: _a_estado(df[f"_{c}"]) for c in CAMPOS_ESTADO_15})
+    pos = df["TIPO_UC"].map(CAMPO_ESTADO_POR_TIPO_UC).map({c: i for i, c in enumerate(CAMPOS_ESTADO_15)})
+    valido = pos.notna().to_numpy()
+    arr = est.to_numpy(dtype=object)
+    res = np.full(len(df), pd.NA, dtype=object)
+    res[valido] = arr[np.flatnonzero(valido), pos[valido].astype(int).to_numpy()]
+    est_15 = pd.Series(res, index=df.index, dtype="string")
+    return est_15.where(df["_VERSION"] == "1.5", df["_ESTADO_20"])
+
+
+def _sin_tildes(texto: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", str(texto)) if unicodedata.category(c) != "Mn").lower()
+
+
+def _columna_mes(columnas, anio: int, mes: int):
+    for c in columnas:
+        if isinstance(c, (pd.Timestamp, datetime.datetime, datetime.date)) and (c.year, c.month) == (anio, mes):
+            return c
+    return None
+
+
+def valores_inversion(contenido: bytes, anio: int, mes: int) -> pd.Series:
+    """Serie {TIPO_ELEMENTO: valor} tomada de la columna del mes seleccionado en la hoja 'Valor inversion'.
+    Si esa columna no trae valores calculados, se calcula como VALOR_INVERSION_BASE x (IPP del mes / IPP base)
+    con la hoja 'index'."""
+    xl = pd.ExcelFile(BytesIO(contenido), engine="openpyxl")
+    hoja = next((h for h in xl.sheet_names if "valor" in _sin_tildes(h) and "inversion" in _sin_tildes(h)), None)
+    if hoja is None:
+        raise ValueError("El Excel IT2 no tiene una hoja 'Valor inversion'.")
+    df = xl.parse(hoja)
+    col = _columna_mes(df.columns, anio, mes)
+    if col is None:
+        raise ValueError(f"La hoja '{hoja}' no tiene una columna para {MESES[mes]} {anio}.")
+    valor = pd.to_numeric(df[col], errors="coerce")
+    if valor.isna().any():  # sin valores cacheados: se calcula con el índice IPP
+        h_idx = next((h for h in xl.sheet_names if _sin_tildes(h).strip() == "index"), None)
+        if h_idx is None:
+            raise ValueError(f"La columna de {MESES[mes]} {anio} está vacía y no existe la hoja 'index' para calcularla.")
+        idx = xl.parse(h_idx)
+        col_idx = _columna_mes(idx.columns, anio, mes)
+        ipp_base = pd.to_numeric(idx["Ipp base*"], errors="coerce").iloc[0]
+        ipp_mes = pd.to_numeric(idx[col_idx], errors="coerce").iloc[0] if col_idx is not None else np.nan
+        if pd.isna(ipp_base) or pd.isna(ipp_mes):
+            raise ValueError(f"No hay valor ni índice IPP para {MESES[mes]} {anio}.")
+        valor = pd.to_numeric(df["VALOR_INVERSION_BASE"], errors="coerce") * (ipp_mes / ipp_base)
+    tipo = pd.to_numeric(df["TIPO_ELEMENTO"], errors="coerce")
+    return pd.Series(valor.to_numpy(), index=tipo.to_numpy())[lambda x: x.index.notna()].rename("VALOR")
 
 
 def unificar_por_nui(mttos: pd.DataFrame):
@@ -133,6 +193,26 @@ def unificar_por_nui(mttos: pd.DataFrame):
                 .sort_values(["_sin_tipo", "FECHA_REF"], kind="stable"))
     unicos = ordenado.drop_duplicates(subset="NUI_NORM", keep="first").drop(columns="_sin_tipo")
     return unicos.reset_index(drop=True), len(mttos) - len(unicos)
+
+
+# --- Descripción del mantenimiento -------------------------------------------
+# Se asigna al azar una de estas 6 a cada NUI y se repite igual en todas las filas de ese NUI.
+DESCRIPCIONES_MANTENIMIENTO = [
+    "Inspeccion visual de los paneles fotovoltaicos  Limpieza superficie Ajuste de torques inspeccion de mastil y pernos de anclaje con inspeccion de torque revision de conexiones y puesta a tierra estado de fusibles sulfatacion prueba de voltaje y corrientes en circuito abierto y cerrado breakers en DC estado conexion y conductividad de cableado",
+    "revision estado general de la planta revision de circuito interno adecuaciones no autorizadas estado de conexion verificacion de conexiones fraudulentas limpieza de gabinete capacitacion del usuario recomendaciones generales llenado planilla control de actividades verificacion de protecciones electricas y puesta a tierra en medicion y condicion optima verificado por usuario",
+    "Funcionamiento de lectura de variables electricas y torque medicion de elemento patron en DC y AC equipo patro calibrado y certificado revision firmware y estado general de conexion funcionamiento tarjeta protocolo de evaluacion de datos de medida de disponibilidad",
+    "Revision de los componentes electronicos verificacion de bms si aplica pruebas de voltaje y corriente en circuito abierto y cerrado verificacion conectores lubricacion y adecuacion inspeccion visual para detertar anomalias parte fisicas Limpieza de partes sulfatadas y torque protocolo carga y descarga",
+    "Verificacion de voltajes y corrientes en circuito abierto y cerrado verificacion y configuracion d eocntrolador de carga a especificaciones del proyecto limpieza e inspeccion general del componente evaluacion de estado conectores y verificacion torques",
+    "Configuracion limpieza analisis de medida en circuto abierto y cerrado prueba de conductividad inspeccion visual verificacion de conectores en etapa DC sujecion y torques limpieza sistema de ventilacion verificacion de circuito de potencia y iluminacion verificacion tablero distribucion prueba en circuito cerrado con carga protocolo de pruebas de estres al sistema",
+]
+
+
+def descripcion_por_nui(mttos: pd.DataFrame) -> pd.Series:
+    """Una descripción al azar por NUI. Reproducible: depende solo del NUI y del mes del mantenimiento."""
+    def elegir(nui, fecha):
+        semilla = zlib.crc32(f"desc|{nui}|{fecha:%Y-%m}".encode())
+        return DESCRIPCIONES_MANTENIMIENTO[int(np.random.default_rng(semilla).integers(len(DESCRIPCIONES_MANTENIMIENTO)))]
+    return pd.Series([elegir(n, f) for n, f in zip(mttos["NUI_NORM"], mttos["FECHA_REF"])], index=mttos.index)
 
 
 # --- Fechas ---------------------------------------------------------------
@@ -224,7 +304,7 @@ def fechas_20_inconsistentes(mttos: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"NUI": m.loc[malo, "NUI_NORM"], "FECHA INICIO": ini[malo], "FECHA FIN": fin[malo]})
 
 
-def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame, valores: pd.Series | None = None) -> pd.DataFrame:
     """Cada mantenimiento que cruzó se expande a todas las filas de la base de su NIU.
     El resultado queda ordenado por NUI."""
     mttos = mttos.reset_index(drop=True)
@@ -232,13 +312,18 @@ def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     m = pd.DataFrame({
         "NUI_MANTENIMIENTO": mttos["NUI_NORM"].to_numpy(),
         "TIPO DE MANTENIMIENTO": tipo_mantenimiento(mttos).to_numpy(),
-        "ESTADO": estado_mantenimiento(mttos).to_numpy(),
+        "MANTENIMIENTO REALIZADO": descripcion_por_nui(mttos).to_numpy(),
+        "_VERSION": mttos["VERSION"].to_numpy(),
+        "_ESTADO_20": estado_entrega_20(mttos).to_numpy(),
         "FECHA INICIO": inicio.to_numpy(),
         "FECHA FIN": fin.to_numpy(),
     })
+    for c in CAMPOS_ESTADO_15:
+        m[f"_{c}"] = mttos[c].to_numpy() if c in mttos.columns else None
     m["_orden"] = pd.to_numeric(m["NUI_MANTENIMIENTO"])
     m = m.sort_values("_orden", kind="stable")  # bloques por NUI; dentro de cada uno queda el orden de la base
     df = m.merge(base, left_on="NUI_MANTENIMIENTO", right_on="NIU", how="left")
+    df["ESTADO"] = estado_por_fila(df)
 
     out = pd.DataFrame(index=df.index, columns=COLUMNAS_IT2, dtype=object)
     out["NIU"] = pd.to_numeric(df["NIU"])
@@ -252,10 +337,13 @@ def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     out["NUI_MANTENIMIENTO"] = pd.to_numeric(df["NUI_MANTENIMIENTO"])
     out["TIPO DE MANTENIMIENTO"] = df["TIPO DE MANTENIMIENTO"]
     out["DECO TIPO MANTENIMIENTO"] = df["TIPO DE MANTENIMIENTO"].map(DECO_TIPO_MTTO)
+    out["MANTENIMIENTO REALIZADO"] = df["MANTENIMIENTO REALIZADO"]
     out["FECHA INICIO"] = df["FECHA INICIO"]
     out["FECHA FIN"] = df["FECHA FIN"]
     out["ESTADO"] = df["ESTADO"]
     out["DECO ESTADO"] = df["ESTADO"].map(DECO_ESTADO)
+    if valores is not None:  # cruce TIPO_UC_9995 <-> TIPO_ELEMENTO
+        out["VALOR"] = out["TIPO_UC_9995"].map(valores)
     out = out.reset_index(drop=True)
     out.attrs["resumen_fechas"] = resumen
     return out
@@ -275,6 +363,9 @@ def excel_it2(df: pd.DataFrame) -> bytes:
             ws.cell(row=1, column=i).font = Font(bold=True)
             largo = df[col].astype(str).str.len().head(500).max() if len(df) else 0
             ws.column_dimensions[get_column_letter(i)].width = min(max(len(col), largo) + 2, 45)
+            if col == "VALOR":
+                for celda in ws[get_column_letter(i)][1:]:
+                    celda.number_format = "#,##0.00"
             if col in ("FECHA INICIO", "FECHA FIN"):
                 for celda in ws[get_column_letter(i)][1:]:
                     celda.number_format = "dd-mm-yyyy hh:mm"
