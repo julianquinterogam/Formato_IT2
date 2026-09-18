@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from it2 import (HOJA_15_DEFECTO, MESES, construir_it2, cruzar_con_base, excel_it2, filtrar_mes,
-                 hojas_excel, leer_base, leer_mtto_15, leer_mtto_20)
+                 hojas_excel, leer_base, leer_mtto_15, leer_mtto_20, unificar_por_nui)
 
 st.set_page_config(page_title="IT2 Mantenimientos", page_icon="🔧", layout="wide")
 
@@ -84,6 +84,11 @@ with st.expander("Vista previa: descartados (NUI que no están en la base)"):
 st.divider()
 st.subheader("Formato IT2")
 mttos = pd.concat(cruzados, ignore_index=True)
+if not mttos.empty:
+    mttos, repetidos = unificar_por_nui(mttos)
+    if repetidos:
+        st.info(f"{repetidos} registros repetidos por NUI en el mes; se dejó un solo mantenimiento por NUI "
+                "(el más antiguo del mes que tenga tipo de mantenimiento).")
 if mttos.empty:
     st.warning("No hay mantenimientos que crucen con la base en este mes; no hay nada que descargar.")
     st.stop()
