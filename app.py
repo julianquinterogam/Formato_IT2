@@ -1,3 +1,5 @@
+import importlib.util
+import sys
 from datetime import date
 
 import streamlit as st
@@ -6,6 +8,12 @@ from it2 import (HOJA_15_DEFECTO, MESES, cruzar_con_base, filtrar_mes, hojas_exc
                        leer_base, leer_mtto_15, leer_mtto_20)
 
 st.set_page_config(page_title="IT2 Mantenimientos", page_icon="🔧", layout="wide")
+
+with st.sidebar:
+    st.caption("Diagnóstico")
+    st.write("Python:", sys.version.split()[0])
+    st.write("xlrd instalado:", importlib.util.find_spec("xlrd") is not None)
+    st.write("openpyxl instalado:", importlib.util.find_spec("openpyxl") is not None)
 
 st.title("Formato IT2 – Mantenimientos")
 st.caption("Paso 1: carga de archivos, filtro por mes/año y cruce con la base.")
@@ -37,7 +45,7 @@ f_base = st.file_uploader("Base (Excel con NIU, cod_localidad, dane, TIPO_UC...)
 f_15 = st.file_uploader("Listado de mantenimientos 1.5", type=["xls", "xlsx"])
 hoja_15 = None
 if f_15:
-    hojas = hojas_excel(f_15.getvalue(), "xlrd" if f_15.name.lower().endswith(".xls") else None)
+    hojas = hojas_excel(f_15.getvalue())
     idx = hojas.index(HOJA_15_DEFECTO) if HOJA_15_DEFECTO in hojas else 0
     hoja_15 = st.selectbox("Hoja del listado 1.5", hojas, index=idx)
 f_20 = st.file_uploader("Listado de mantenimientos 2.0", type=["xls", "xlsx"])
