@@ -81,6 +81,8 @@ COLUMNAS_IT2 = [
 # TIPO_UC -> TIPO_UC_9995
 HOMOLOGACION_TIPO_UC = {1: 5, 2: 6, 3: 7, 4: 10, 5: 14, 6: 21, 7: 21, 8: 21, 9: 21, 10: 21, 11: 19}
 DECO_TIPO_MTTO = {"Preventivo": 1, "Correctivo": 2}
+DECO_ESTADO = {"Funcional": 1, "No Funcional": 2}
+CAMPOS_ESTADO_15 = ["estadoGabinete", "paneles", "puestaTierra", "inversor", "bateria", "protecciones", "mppt", "soporte"]
 
 
 def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
@@ -95,6 +97,32 @@ def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
     if tipo_15 is None:
         return tipo_20
     return tipo_15.where(es_15, tipo_20)
+
+
+def estado_mantenimiento(df: pd.DataFrame) -> pd.Series:
+    """1.5: No Funcional si alguno de los 8 campos de revisión empieza por 'Malo'; Funcional si hay al menos un
+    'Bueno' y ningún 'Malo' ('No Tiene', 'No Existe' y vacíos se ignoran). Sin ningún dato -> vacío.
+    2.0: columna 'Entrega' (Funcional / No Funcional); cualquier otro valor -> vacío."""
+    # 1.5
+    campos = [c for c in CAMPOS_ESTADO_15 if c in df.columns]
+    if campos:
+        v = df[campos].apply(lambda col: col.astype("string").str.strip().str.lower())
+        hay_malo = v.apply(lambda col: col.str.startswith("malo", na=False)).any(axis=1)
+        hay_bueno = v.apply(lambda col: col.eq("bueno")).any(axis=1)
+        est_15 = pd.Series(pd.NA, index=df.index, dtype="string")
+        est_15[hay_bueno] = "Funcional"
+        est_15[hay_malo] = "No Funcional"
+    else:
+        est_15 = pd.Series(pd.NA, index=df.index, dtype="string")
+    # 2.0
+    if "Entrega" in df.columns:
+        e = df["Entrega"].astype("string").str.strip().str.lower()
+        est_20 = pd.Series(pd.NA, index=df.index, dtype="string")
+        est_20[e == "funcional"] = "Funcional"
+        est_20[e == "no funcional"] = "No Funcional"
+    else:
+        est_20 = pd.Series(pd.NA, index=df.index, dtype="string")
+    return est_15.where(df["VERSION"] == "1.5", est_20)
 
 
 def unificar_por_nui(mttos: pd.DataFrame):
@@ -204,6 +232,7 @@ def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     m = pd.DataFrame({
         "NUI_MANTENIMIENTO": mttos["NUI_NORM"].to_numpy(),
         "TIPO DE MANTENIMIENTO": tipo_mantenimiento(mttos).to_numpy(),
+        "ESTADO": estado_mantenimiento(mttos).to_numpy(),
         "FECHA INICIO": inicio.to_numpy(),
         "FECHA FIN": fin.to_numpy(),
     })
@@ -225,6 +254,8 @@ def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     out["DECO TIPO MANTENIMIENTO"] = df["TIPO DE MANTENIMIENTO"].map(DECO_TIPO_MTTO)
     out["FECHA INICIO"] = df["FECHA INICIO"]
     out["FECHA FIN"] = df["FECHA FIN"]
+    out["ESTADO"] = df["ESTADO"]
+    out["DECO ESTADO"] = df["ESTADO"].map(DECO_ESTADO)
     out = out.reset_index(drop=True)
     out.attrs["resumen_fechas"] = resumen
     return out
