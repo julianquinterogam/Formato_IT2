@@ -95,6 +95,16 @@ def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
     return tipo_15.where(es_15, tipo_20)
 
 
+def unificar_por_nui(mttos: pd.DataFrame):
+    """Un solo mantenimiento por NUI en el mes. Se prefiere un registro que tenga tipo de mantenimiento
+    y, entre esos, el más antiguo (a igual fecha, el primero del listado).
+    Devuelve (mantenimientos_unicos, cantidad_de_registros_descartados)."""
+    ordenado = (mttos.assign(_sin_tipo=tipo_mantenimiento(mttos).isna())
+                .sort_values(["_sin_tipo", "FECHA_REF"], kind="stable"))
+    unicos = ordenado.drop_duplicates(subset="NUI_NORM", keep="first").drop(columns="_sin_tipo")
+    return unicos.reset_index(drop=True), len(mttos) - len(unicos)
+
+
 def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     """Cada mantenimiento que cruzó se expande a todas las filas de la base de su NIU."""
     m = pd.DataFrame({
