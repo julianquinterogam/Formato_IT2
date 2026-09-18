@@ -1,22 +1,15 @@
-import importlib.util
-import sys
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 
-from it2 import (HOJA_15_DEFECTO, MESES, cruzar_con_base, filtrar_mes, hojas_excel,
-                       leer_base, leer_mtto_15, leer_mtto_20)
+from it2 import (HOJA_15_DEFECTO, MESES, construir_it2, cruzar_con_base, excel_it2, filtrar_mes,
+                 hojas_excel, leer_base, leer_mtto_15, leer_mtto_20)
 
 st.set_page_config(page_title="IT2 Mantenimientos", page_icon="🔧", layout="wide")
 
-with st.sidebar:
-    st.caption("Diagnóstico")
-    st.write("Python:", sys.version.split()[0])
-    st.write("xlrd instalado:", importlib.util.find_spec("xlrd") is not None)
-    st.write("openpyxl instalado:", importlib.util.find_spec("openpyxl") is not None)
-
 st.title("Formato IT2 – Mantenimientos")
-st.caption("Paso 1: carga de archivos, filtro por mes/año y cruce con la base.")
+st.caption("Carga de archivos, filtro por mes/año, cruce con la base y descarga del formato.")
 
 
 @st.cache_data(show_spinner="Leyendo base...")
@@ -86,3 +79,29 @@ with st.expander("Vista previa: descartados (NUI que no están en la base)"):
     for (version, _), no in zip(resultados, descartados):
         st.write(f"Versión {version}")
         st.dataframe(no[["NUI_NORM", "FECHA_REF"]].head(50), use_container_width=True)
+
+# ---------- Formato IT2 y descarga ----------
+st.divider()
+st.subheader("Formato IT2")
+mttos = pd.concat(cruzados, ignore_index=True)
+if mttos.empty:
+    st.warning("No hay mantenimientos que crucen con la base en este mes; no hay nada que descargar.")
+    st.stop()
+
+it2 = construir_it2(mttos, base)
+sin_tipo = int(it2["TIPO DE MANTENIMIENTO"].isna().groupby(it2["NUI_MANTENIMIENTO"]).all().sum())
+if sin_tipo:
+    st.warning(f"{sin_tipo} NUI vienen sin tipo de mantenimiento (ni Preventivo ni Correctivo); "
+               "su columna TIPO DE MANTENIMIENTO queda vacía.")
+
+st.write(f"**{len(it2):,} filas** de **{it2['NUI_MANTENIMIENTO'].nunique():,} NUI** con mantenimiento.")
+st.dataframe(it2.head(100), use_container_width=True)
+
+nombre = f"IT2_{mes:02d}_{int(anio)}_editable.xlsx"
+st.download_button(
+    f"Descargar {nombre}",
+    data=excel_it2(it2),
+    file_name=nombre,
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type="primary",
+)
