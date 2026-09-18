@@ -1,0 +1,62 @@
+"""Lógica del formato IT2 Mantenimientos (Paso 1: carga, filtro por mes y cruce con la base)."""
+import re
+from io import BytesIO
+
+import pandas as pd
+
+MESES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+         7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+
+HOJA_15_DEFECTO = "mttos 23_24_25"
+
+
+def normalizar_nui(valor):
+    """'44430-1027' -> '444301027'; 444301014.0 -> '444301014'; vacío -> None."""
+    if pd.isna(valor):
+        return None
+    texto = str(valor).strip()
+    if texto.endswith(".0"):
+        texto = texto[:-2]
+    solo_digitos = re.sub(r"\D", "", texto)
+    return solo_digitos or None
+
+
+def hojas_excel(contenido: bytes, motor: str | None = None) -> list[str]:
+    return pd.ExcelFile(BytesIO(contenido), engine=motor).sheet_names
+
+
+def leer_base(contenido: bytes) -> pd.DataFrame:
+    df = pd.read_excel(BytesIO(contenido), engine="openpyxl")
+    df["NIU"] = df["NIU"].map(normalizar_nui)
+    return df
+
+
+def leer_mtto_15(contenido: bytes, hoja: str) -> pd.DataFrame:
+    """Listado 1.5: el NUI viene en 'NUI' y la fecha (sin hora) en 'fecha'."""
+    df = pd.read_excel(BytesIO(contenido), sheet_name=hoja, engine="xlrd")
+    df["NUI_NORM"] = df["NUI"].map(normalizar_nui)
+    df["FECHA_REF"] = pd.to_datetime(df["fecha"], errors="coerce")
+    df["VERSION"] = "1.5"
+    return df
+
+
+def leer_mtto_20(contenido: bytes) -> pd.DataFrame:
+    """Listado 2.0: el NUI viene en 'Responsable' y la fecha con hora en 'Fecha_Inicio'."""
+    df = pd.read_excel(BytesIO(contenido), engine="xlrd")
+    df["NUI_NORM"] = df["Responsable"].map(normalizar_nui)
+    df["FECHA_REF"] = pd.to_datetime(df["Fecha_Inicio"], errors="coerce")
+    df["VERSION"] = "2.0"
+    return df
+
+
+def filtrar_mes(df: pd.DataFrame, anio: int, mes: int) -> pd.DataFrame:
+    """Deja únicamente los registros cuya fecha cae en el mes y año seleccionados."""
+    f = df["FECHA_REF"]
+    return df[(f.dt.year == anio) & (f.dt.month == mes)].copy()
+
+
+def cruzar_con_base(mtto: pd.DataFrame, base: pd.DataFrame):
+    """Separa los mantenimientos cuyo NUI existe como NIU en la base de los que no."""
+    nius = set(base["NIU"].dropna())
+    coincide = mtto["NUI_NORM"].isin(nius)
+    return mtto[coincide].copy(), mtto[~coincide].copy()
