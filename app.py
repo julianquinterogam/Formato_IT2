@@ -5,7 +5,7 @@ import streamlit as st
 
 from it2 import (HOJA_15_DEFECTO, MESES, construir_it2, cruzar_con_base, excel_it2, filtrar_mes,
                  fechas_20_inconsistentes, hojas_excel, leer_base, leer_mtto_15, leer_mtto_20,
-                 unificar_por_nui)
+                 unificar_por_nui, valores_inversion)
 
 st.set_page_config(page_title="IT2 Mantenimientos", page_icon="🔧", layout="wide")
 
@@ -21,6 +21,11 @@ def _base(contenido: bytes):
 @st.cache_data(show_spinner="Leyendo listado 1.5...")
 def _m15(contenido: bytes, hoja: str):
     return leer_mtto_15(contenido, hoja)
+
+
+@st.cache_data(show_spinner="Leyendo valores de inversión...")
+def _valores(contenido: bytes, anio: int, mes: int):
+    return valores_inversion(contenido, anio, mes)
 
 
 @st.cache_data(show_spinner="Leyendo listado 2.0...")
@@ -43,6 +48,7 @@ if f_15:
     idx = hojas.index(HOJA_15_DEFECTO) if HOJA_15_DEFECTO in hojas else 0
     hoja_15 = st.selectbox("Hoja del listado 1.5", hojas, index=idx)
 f_20 = st.file_uploader("Listado de mantenimientos 2.0", type=["xls", "xlsx"])
+f_it2 = st.file_uploader("Excel IT2 (hoja 'Valor inversion', para la columna VALOR)", type=["xlsx"])
 
 if not f_base or not (f_15 or f_20):
     st.info("Sube la base y al menos un listado de mantenimientos para continuar.")
@@ -94,7 +100,17 @@ if mttos.empty:
     st.warning("No hay mantenimientos que crucen con la base en este mes; no hay nada que descargar.")
     st.stop()
 
-it2 = construir_it2(mttos, base)
+valores = None
+if f_it2:
+    try:
+        valores = _valores(f_it2.getvalue(), int(anio), mes)
+    except ValueError as e:
+        st.error(str(e))
+else:
+    st.info("Sube el Excel IT2 para que la columna VALOR se llene con el valor del mes seleccionado.")
+it2 = construir_it2(mttos, base, valores)
+if valores is not None and it2["VALOR"].isna().any():
+    st.warning(f"{int(it2['VALOR'].isna().sum())} filas quedaron sin VALOR: su TIPO_UC_9995 no está en la hoja 'Valor inversion'.")
 sin_tipo = int(it2["TIPO DE MANTENIMIENTO"].isna().groupby(it2["NUI_MANTENIMIENTO"]).all().sum())
 if sin_tipo:
     st.warning(f"{sin_tipo} NUI vienen sin tipo de mantenimiento (ni Preventivo ni Correctivo); "
@@ -113,10 +129,10 @@ if len(malas):
     with st.expander("Ver esos NUI"):
         st.dataframe(malas, use_container_width=True)
 
-sin_estado = int(it2["ESTADO"].isna().groupby(it2["NUI_MANTENIMIENTO"]).all().sum())
-if sin_estado:
-    st.warning(f"{sin_estado} NUI vienen sin datos para determinar el estado (campos de revisión vacíos en el 1.5 "
-               "o 'Entrega' vacío/'undefined' en el 2.0); su ESTADO y DECO ESTADO quedan vacíos.")
+sin_estado = it2["ESTADO"].isna()
+if sin_estado.any():
+    st.warning(f"{sin_estado.sum()} filas ({it2.loc[sin_estado, 'NUI_MANTENIMIENTO'].nunique()} NUI del listado 2.0) "
+               "quedan sin ESTADO porque 'Entrega' viene vacío o con 'undefined'.")
 
 st.write(f"**{len(it2):,} filas** de **{it2['NUI_MANTENIMIENTO'].nunique():,} NUI** con mantenimiento, ordenadas por NUI.")
 st.dataframe(it2.head(100), use_container_width=True)
