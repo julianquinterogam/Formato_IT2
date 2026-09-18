@@ -21,8 +21,13 @@ def normalizar_nui(valor):
     return solo_digitos or None
 
 
-def hojas_excel(contenido: bytes, motor: str | None = None) -> list[str]:
-    return pd.ExcelFile(BytesIO(contenido), engine=motor).sheet_names
+def _motor(contenido: bytes) -> str:
+    """.xlsx es un zip (empieza con 'PK') -> openpyxl; .xls antiguo (OLE2) -> xlrd."""
+    return "openpyxl" if contenido[:2] == b"PK" else "xlrd"
+
+
+def hojas_excel(contenido: bytes) -> list[str]:
+    return pd.ExcelFile(BytesIO(contenido), engine=_motor(contenido)).sheet_names
 
 
 def leer_base(contenido: bytes) -> pd.DataFrame:
@@ -33,7 +38,7 @@ def leer_base(contenido: bytes) -> pd.DataFrame:
 
 def leer_mtto_15(contenido: bytes, hoja: str) -> pd.DataFrame:
     """Listado 1.5: el NUI viene en 'NUI' y la fecha (sin hora) en 'fecha'."""
-    df = pd.read_excel(BytesIO(contenido), sheet_name=hoja, engine="xlrd")
+    df = pd.read_excel(BytesIO(contenido), sheet_name=hoja, engine=_motor(contenido))
     df["NUI_NORM"] = df["NUI"].map(normalizar_nui)
     df["FECHA_REF"] = pd.to_datetime(df["fecha"], errors="coerce")
     df["VERSION"] = "1.5"
@@ -42,7 +47,7 @@ def leer_mtto_15(contenido: bytes, hoja: str) -> pd.DataFrame:
 
 def leer_mtto_20(contenido: bytes) -> pd.DataFrame:
     """Listado 2.0: el NUI viene en 'Responsable' y la fecha con hora en 'Fecha_Inicio'."""
-    df = pd.read_excel(BytesIO(contenido), engine="xlrd")
+    df = pd.read_excel(BytesIO(contenido), engine=_motor(contenido))
     df["NUI_NORM"] = df["Responsable"].map(normalizar_nui)
     df["FECHA_REF"] = pd.to_datetime(df["Fecha_Inicio"], errors="coerce")
     df["VERSION"] = "2.0"
