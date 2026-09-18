@@ -65,3 +65,71 @@ def cruzar_con_base(mtto: pd.DataFrame, base: pd.DataFrame):
     nius = set(base["NIU"].dropna())
     coincide = mtto["NUI_NORM"].isin(nius)
     return mtto[coincide].copy(), mtto[~coincide].copy()
+
+
+# ---------------------------------------------------------------------------
+# Paso 2: armado del formato IT2 (columnas de la base, homologaciones, tipo de mantenimiento)
+# ---------------------------------------------------------------------------
+COLUMNAS_IT2 = [
+    "NIU", "COD_LOCALIDAD", "DANE", "TIPO_UC", "TIPO_UC_9995", "CAPACIDAD_UC", "MARCA",
+    "SERIAL_INTERNO", "NUI_MANTENIMIENTO", "TIPO DE MANTENIMIENTO", "DECO TIPO MANTENIMIENTO",
+    "MANTENIMIENTO REALIZADO", "FECHA INICIO", "FECHA FIN", "ESTADO", "DECO ESTADO", "VALOR",
+]
+
+# TIPO_UC -> TIPO_UC_9995
+HOMOLOGACION_TIPO_UC = {1: 5, 2: 6, 3: 7, 4: 10, 5: 14, 6: 21, 7: 21, 8: 21, 9: 21, 10: 21, 11: 19}
+DECO_TIPO_MTTO = {"Preventivo": 1, "Correctivo": 2}
+
+
+def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
+    """1.5: columna Maintenance_Type. 2.0: columnas Preventivo / Correctivo marcadas con True."""
+    es_15 = df["VERSION"] == "1.5"
+    tipo_15 = df["Maintenance_Type"].astype("string").str.strip().str.capitalize() if "Maintenance_Type" in df else None
+    prev = df["Preventivo"].eq(True) if "Preventivo" in df else pd.Series(False, index=df.index)
+    corr = df["Correctivo"].eq(True) if "Correctivo" in df else pd.Series(False, index=df.index)
+    tipo_20 = pd.Series(pd.NA, index=df.index, dtype="string")
+    tipo_20[corr] = "Correctivo"
+    tipo_20[prev] = "Preventivo"  # si vinieran ambos marcados, prevalece Preventivo
+    if tipo_15 is None:
+        return tipo_20
+    return tipo_15.where(es_15, tipo_20)
+
+
+def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+    """Cada mantenimiento que cruzó se expande a todas las filas de la base de su NIU."""
+    m = pd.DataFrame({
+        "NUI_MANTENIMIENTO": mttos["NUI_NORM"].to_numpy(),
+        "TIPO DE MANTENIMIENTO": tipo_mantenimiento(mttos).to_numpy(),
+    })
+    df = m.merge(base, left_on="NUI_MANTENIMIENTO", right_on="NIU", how="left")
+
+    out = pd.DataFrame(index=df.index, columns=COLUMNAS_IT2, dtype=object)
+    out["NIU"] = pd.to_numeric(df["NIU"])
+    out["COD_LOCALIDAD"] = df["cod_localidad"]
+    out["DANE"] = df["dane"]
+    out["TIPO_UC"] = df["TIPO_UC"]
+    out["TIPO_UC_9995"] = df["TIPO_UC"].map(HOMOLOGACION_TIPO_UC)
+    out["CAPACIDAD_UC"] = df["CAPACIDAD_UC"].astype("Int64")
+    out["MARCA"] = df["MARCA"]
+    out["SERIAL_INTERNO"] = df["SERIAL_INTERNO"]
+    out["NUI_MANTENIMIENTO"] = pd.to_numeric(df["NUI_MANTENIMIENTO"])
+    out["TIPO DE MANTENIMIENTO"] = df["TIPO DE MANTENIMIENTO"]
+    out["DECO TIPO MANTENIMIENTO"] = df["TIPO DE MANTENIMIENTO"].map(DECO_TIPO_MTTO)
+    return out.reset_index(drop=True)
+
+
+def excel_it2(df: pd.DataFrame) -> bytes:
+    """Excel editable: encabezado en negrita, primera fila fija y anchos de columna ajustados."""
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="IT2", index=False)
+        ws = writer.sheets["IT2"]
+        ws.freeze_panes = "A2"
+        for i, col in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=i).font = Font(bold=True)
+            largo = df[col].astype(str).str.len().head(500).max() if len(df) else 0
+            ws.column_dimensions[get_column_letter(i)].width = min(max(len(col), largo) + 2, 45)
+    return buf.getvalue()
