@@ -252,9 +252,13 @@ def _programar_grupo(grupo: pd.DataFrame, dia: pd.Timestamp, semilla: str):
     """Mantenimientos 1.5 de un mismo técnico y día. Si no caben en una sola jornada respetando
     duraciones y desplazamientos, se reparten en cuadrillas que trabajan en paralelo."""
     rng = np.random.default_rng(zlib.crc32(semilla.encode()))
+    zona = grupo["vereda"] if "vereda" in grupo else pd.Series(np.nan, index=grupo.index)
+    if "Municipio" in grupo:  # el listado 2.0 no trae vereda: se agrupa por municipio
+        zona = zona.fillna(grupo["Municipio"])
     g = grupo.assign(
-        _vereda=grupo["vereda"].fillna("").astype(str) if "vereda" in grupo else "",
-        _ts=pd.to_numeric(grupo["Id_Encuesta"].astype(str).str.split("-").str[-1], errors="coerce").fillna(0),
+        _vereda=zona.fillna("").astype(str),
+        _ts=(pd.to_numeric(grupo["Id_Encuesta"].astype("string").str.split("-").str[-1], errors="coerce").fillna(0)
+             if "Id_Encuesta" in grupo else 0),
     ).sort_values(["_vereda", "_ts"], kind="stable")  # misma vereda junta, y en el orden real de registro
     tipos = [t if t in DURACION_MIN else "Preventivo" for t in tipo_mantenimiento(g)]
     n = len(tipos)
@@ -273,26 +277,41 @@ def _programar_grupo(grupo: pd.DataFrame, dia: pd.Timestamp, semilla: str):
     return inicio, fin, k
 
 
+def _fechas_20_malas(mttos: pd.DataFrame) -> pd.Series:
+    """True en los registros 2.0 cuya fecha fin falta, es anterior al inicio o cae en otro día."""
+    ini = pd.to_datetime(mttos["Fecha_Inicio"]).dt.floor("min")
+    fin = pd.to_datetime(mttos["Fecha_Finalizacion"]).dt.floor("min")
+    malo = fin.isna() | (fin < ini) | (fin.dt.normalize() != ini.dt.normalize())
+    return (mttos["VERSION"] == "2.0") & malo
+
+
 def asignar_fechas(mttos: pd.DataFrame):
-    """Devuelve (inicio, fin, resumen). Reproducible: el mismo mes siempre genera las mismas horas."""
+    """Devuelve (inicio, fin, resumen). Reproducible: el mismo mes siempre genera las mismas horas.
+    - 2.0 con fechas consistentes: se toman tal cual (sin segundos).
+    - 1.5 (solo trae el día) y 2.0 con fin en otro día: horas simuladas con las reglas de jornada,
+      duración, desplazamiento y cuadrillas; el día es el de inicio."""
     inicio = pd.Series(pd.NaT, index=mttos.index, dtype="datetime64[ns]")
     fin = pd.Series(pd.NaT, index=mttos.index, dtype="datetime64[ns]")
     es20 = mttos["VERSION"] == "2.0"
     if es20.any():
         inicio[es20] = pd.to_datetime(mttos.loc[es20, "Fecha_Inicio"]).dt.floor("min")
         fin[es20] = pd.to_datetime(mttos.loc[es20, "Fecha_Finalizacion"]).dt.floor("min")
+    malas20 = _fechas_20_malas(mttos)
+    simular = mttos[~es20 | malas20]
     grupos_paralelo = registros_paralelo = 0
-    m15 = mttos[~es20]
-    if len(m15):
-        dias = m15["FECHA_REF"].dt.normalize()
-        for (usuario, dia), grupo in m15.groupby([m15["UserName"].fillna(""), dias], sort=False):
-            ini_g, fin_g, k = _programar_grupo(grupo, dia, f"{usuario}|{dia:%Y-%m-%d}")
+    if len(simular):
+        dias = simular["FECHA_REF"].dt.normalize()
+        for (version, usuario, dia), grupo in simular.groupby(
+                [simular["VERSION"], simular["UserName"].fillna(""), dias], sort=False):
+            semilla = f"{usuario}|{dia:%Y-%m-%d}" if version == "1.5" else f"2.0|{dia:%Y-%m-%d}"
+            ini_g, fin_g, k = _programar_grupo(grupo, dia, semilla)
             for etiqueta in ini_g:
                 inicio[etiqueta], fin[etiqueta] = ini_g[etiqueta], fin_g[etiqueta]
             if k > 1:
                 grupos_paralelo += 1
                 registros_paralelo += len(grupo)
-    resumen = {"grupos_en_paralelo": grupos_paralelo, "registros_en_paralelo": registros_paralelo}
+    resumen = {"grupos_en_paralelo": grupos_paralelo, "registros_en_paralelo": registros_paralelo,
+               "reprogramados_20": int(malas20.sum())}
     return inicio, fin, resumen
 
 
