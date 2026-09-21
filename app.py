@@ -3,8 +3,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from it2 import (HOJA_15_DEFECTO, MESES, construir_it2, cruzar_con_base, excel_it2, filtrar_mes,
-                 fechas_20_inconsistentes, hojas_excel, leer_base, leer_mtto_15, leer_mtto_20,
+from it2 import (HOJA_15_DEFECTO, MESES, construir_it2, construir_it2_final, cruzar_con_base, excel_it2,
+                 fechas_20_inconsistentes, filtrar_mes, hojas_excel, leer_base, leer_mtto_15, leer_mtto_20,
                  unificar_por_nui, valores_inversion)
 
 st.set_page_config(page_title="IT2 Mantenimientos", page_icon="🔧", layout="wide")
@@ -94,8 +94,8 @@ mttos = pd.concat(cruzados, ignore_index=True)
 if not mttos.empty:
     mttos, repetidos = unificar_por_nui(mttos)
     if repetidos:
-        st.info(f"{repetidos} registros repetidos por NUI en el mes; se dejó un solo mantenimiento por NUI "
-                "(el más antiguo del mes que tenga tipo de mantenimiento).")
+        st.info(f"{repetidos} registros del mismo NUI y del mismo día en el mes; se dejó uno solo por día "
+                "(el primero del listado). Cuando un NUI tiene mantenimientos en días distintos, se conservan todos.")
 if mttos.empty:
     st.warning("No hay mantenimientos que crucen con la base en este mes; no hay nada que descargar.")
     st.stop()
@@ -111,11 +111,6 @@ else:
 it2 = construir_it2(mttos, base, valores)
 if valores is not None and it2["VALOR"].isna().any():
     st.warning(f"{int(it2['VALOR'].isna().sum())} filas quedaron sin VALOR: su TIPO_UC_9995 no está en la hoja 'Valor inversion'.")
-sin_tipo = int(it2["TIPO DE MANTENIMIENTO"].isna().groupby(it2["NUI_MANTENIMIENTO"]).all().sum())
-if sin_tipo:
-    st.warning(f"{sin_tipo} NUI vienen sin tipo de mantenimiento (ni Preventivo ni Correctivo); "
-               "su columna TIPO DE MANTENIMIENTO queda vacía.")
-
 par = it2.attrs.get("resumen_fechas", {})
 if par.get("grupos_en_paralelo"):
     st.info(f"Horas simuladas: en {par['grupos_en_paralelo']} combinaciones técnico-día "
@@ -143,11 +138,21 @@ if sin_estado.any():
 st.write(f"**{len(it2):,} filas** de **{it2['NUI_MANTENIMIENTO'].nunique():,} NUI** con mantenimiento, ordenadas por NUI.")
 st.dataframe(it2.head(100), use_container_width=True)
 
-nombre = f"IT2_{mes:02d}_{int(anio)}_editable.xlsx"
-st.download_button(
-    f"Descargar {nombre}",
+nombre_editable = f"IT2_{mes:02d}_{int(anio)}_editable.xlsx"
+nombre_final = f"IT2_{mes:02d}_{int(anio)}.xlsx"
+it2_final = construir_it2_final(it2)
+
+c1, c2 = st.columns(2)
+c1.download_button(
+    f"Descargar {nombre_editable}",
     data=excel_it2(it2),
-    file_name=nombre,
+    file_name=nombre_editable,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     type="primary",
+)
+c2.download_button(
+    f"Descargar {nombre_final}",
+    data=excel_it2(it2_final),
+    file_name=nombre_final,
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
