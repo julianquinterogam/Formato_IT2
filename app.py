@@ -130,11 +130,6 @@ if len(malas):
             columns={"FECHA INICIO": "INICIO ORIGINAL", "FECHA FIN": "FIN ORIGINAL"})
         st.dataframe(malas.join(nuevas, on="NUI"), use_container_width=True)
 
-sin_estado = it2["ESTADO"].isna()
-if sin_estado.any():
-    st.warning(f"{sin_estado.sum()} filas ({it2.loc[sin_estado, 'NUI_MANTENIMIENTO'].nunique()} NUI del listado 2.0) "
-               "quedan sin ESTADO porque 'Entrega' viene vacío o con 'undefined'.")
-
 st.write(f"**{len(it2):,} filas** de **{it2['NUI_MANTENIMIENTO'].nunique():,} NUI** con mantenimiento, ordenadas por NUI.")
 st.dataframe(it2.head(100), use_container_width=True)
 
