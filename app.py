@@ -118,16 +118,22 @@ if sin_tipo:
 
 par = it2.attrs.get("resumen_fechas", {})
 if par.get("grupos_en_paralelo"):
-    st.info(f"Horas del listado 1.5: en {par['grupos_en_paralelo']} combinaciones técnico-día "
+    st.info(f"Horas simuladas: en {par['grupos_en_paralelo']} combinaciones técnico-día "
             f"({par['registros_en_paralelo']} mantenimientos) los mantenimientos no caben en una sola jornada "
             "de 08:00 a 17:00 con las duraciones y desplazamientos definidos, así que se repartieron en "
             "cuadrillas que trabajan en paralelo.")
 malas = fechas_20_inconsistentes(mttos)
 if len(malas):
-    st.warning(f"{len(malas)} mantenimientos del listado 2.0 traen la fecha fin anterior al inicio o en otro día. "
-               "Se dejaron tal cual vienen en el listado; conviene revisarlos en el Excel.")
-    with st.expander("Ver esos NUI"):
-        st.dataframe(malas, use_container_width=True)
+    st.info(f"{len(malas)} mantenimientos del listado 2.0 traían la fecha fin anterior al inicio o en otro día; "
+            "se reprogramaron con las mismas reglas del 1.5 (mismo día de inicio, jornada de 08:00 a 17:00 "
+            "y duración según el tipo de mantenimiento).")
+    with st.expander("Ver esos NUI (fechas originales y nuevas)"):
+        nuevas = (it2.drop_duplicates("NUI_MANTENIMIENTO")
+                  .set_index("NUI_MANTENIMIENTO")[["FECHA INICIO", "FECHA FIN"]]
+                  .rename(columns={"FECHA INICIO": "INICIO NUEVO", "FECHA FIN": "FIN NUEVO"}))
+        malas = malas.assign(NUI=pd.to_numeric(malas["NUI"])).rename(
+            columns={"FECHA INICIO": "INICIO ORIGINAL", "FECHA FIN": "FIN ORIGINAL"})
+        st.dataframe(malas.join(nuevas, on="NUI"), use_container_width=True)
 
 sin_estado = it2["ESTADO"].isna()
 if sin_estado.any():
