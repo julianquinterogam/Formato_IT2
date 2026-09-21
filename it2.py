@@ -122,14 +122,27 @@ def _a_estado(col: pd.Series) -> pd.Series:
     return est
 
 
+CAMPOS_TEXTO_ESTADO_20 = ["Entrega", "Estado_Entrega_instalacion", "Estado_Instalacion", "Hallazgos", "Observaciones"]
+
+
 def estado_entrega_20(df: pd.DataFrame) -> pd.Series:
-    """Listado 2.0: solo hay un estado general, la columna 'Entrega' (Funcional / No Funcional)."""
+    """Listado 2.0: estado general del NUI. Se busca primero en 'Entrega' (Funcional / No Funcional); si viene
+    vacío o con 'undefined', se busca la palabra 'funcional' en 'Estado_Entrega_instalacion', 'Estado_Instalacion',
+    'Hallazgos' y 'Observaciones', en ese orden (se revisa 'no funcional' antes que 'funcional' para no
+    confundirlas). Si ninguna trae información, se asume No Funcional, para que quede marcado y se revise."""
     est = pd.Series(pd.NA, index=df.index, dtype="string")
-    if "Entrega" in df.columns:
-        e = df["Entrega"].astype("string").str.strip().str.lower()
-        est[e == "funcional"] = "Funcional"
-        est[e == "no funcional"] = "No Funcional"
-    return est
+    for campo in CAMPOS_TEXTO_ESTADO_20:
+        if campo not in df.columns:
+            continue
+        falta = est.isna()
+        if not falta.any():
+            break
+        texto = df.loc[falta, campo].astype("string").str.strip().str.lower()
+        est.loc[falta[falta].index[texto.str.contains("no funcional", na=False)]] = "No Funcional"
+        falta = est.isna()
+        texto = df.loc[falta, campo].astype("string").str.strip().str.lower()
+        est.loc[falta[falta].index[texto.str.contains("funcional", na=False)]] = "Funcional"
+    return est.fillna("No Funcional")  # sin ningún dato de estado: se deja marcado para revisión manual
 
 
 def estado_por_fila(df: pd.DataFrame) -> pd.Series:
