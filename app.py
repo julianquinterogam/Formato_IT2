@@ -119,9 +119,9 @@ if par.get("grupos_en_paralelo"):
             "cuadrillas que trabajan en paralelo.")
 malas = fechas_20_inconsistentes(mttos)
 if len(malas):
-    st.info(f"{len(malas)} mantenimientos del listado 2.0 traían la fecha fin anterior al inicio o en otro día; "
-            "se reprogramaron con las mismas reglas del 1.5 (mismo día de inicio, jornada de 08:00 a 17:00 "
-            "y duración según el tipo de mantenimiento).")
+    st.info(f"{len(malas)} mantenimientos del listado 2.0 traían la fecha fin anterior al inicio, igual al "
+            "inicio (misma hora redondeada al minuto) o en otro día; se reprogramaron con las mismas reglas "
+            "del 1.5 (mismo día de inicio, jornada de 08:00 a 17:00 y duración según el tipo de mantenimiento).")
     with st.expander("Ver esos NUI (fechas originales y nuevas)"):
         nuevas = (it2.drop_duplicates("NUI_MANTENIMIENTO")
                   .set_index("NUI_MANTENIMIENTO")[["FECHA INICIO", "FECHA FIN"]]
