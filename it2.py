@@ -289,10 +289,11 @@ def _programar_grupo(grupo: pd.DataFrame, dia: pd.Timestamp, semilla: str):
 
 
 def _fechas_20_malas(mttos: pd.DataFrame) -> pd.Series:
-    """True en los registros 2.0 cuya fecha fin falta, es anterior al inicio o cae en otro día."""
+    """True en los registros 2.0 cuya fecha fin falta, es anterior o igual al inicio (al redondear a minuto,
+    incluye inicio y fin idénticos) o cae en otro día."""
     ini = pd.to_datetime(mttos["Fecha_Inicio"]).dt.floor("min")
     fin = pd.to_datetime(mttos["Fecha_Finalizacion"]).dt.floor("min")
-    malo = fin.isna() | (fin < ini) | (fin.dt.normalize() != ini.dt.normalize())
+    malo = fin.isna() | (fin <= ini) | (fin.dt.normalize() != ini.dt.normalize())
     return (mttos["VERSION"] == "2.0") & malo
 
 
@@ -327,10 +328,10 @@ def asignar_fechas(mttos: pd.DataFrame):
 
 
 def fechas_20_inconsistentes(mttos: pd.DataFrame) -> pd.DataFrame:
-    """Registros 2.0 cuya fecha fin es anterior al inicio o cae en otro día."""
+    """Registros 2.0 cuya fecha fin es anterior o igual al inicio (al redondear a minuto) o cae en otro día."""
     m = mttos[mttos["VERSION"] == "2.0"]
     ini = pd.to_datetime(m["Fecha_Inicio"]); fin = pd.to_datetime(m["Fecha_Finalizacion"])
-    malo = fin.isna() | (fin < ini) | (fin.dt.normalize() != ini.dt.normalize())
+    malo = fin.isna() | (fin.dt.floor("min") <= ini.dt.floor("min")) | (fin.dt.normalize() != ini.dt.normalize())
     return pd.DataFrame({"NUI": m.loc[malo, "NUI_NORM"], "FECHA INICIO": ini[malo], "FECHA FIN": fin[malo]})
 
 
