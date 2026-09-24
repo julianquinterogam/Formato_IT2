@@ -58,6 +58,19 @@ def leer_mtto_20(contenido: bytes) -> pd.DataFrame:
     return df
 
 
+def leer_mtto_sytex(contenido: bytes) -> pd.DataFrame:
+    """Listado SYTEX (EJECUTADO_SYTEX): el NUI viene en 'Nui', la fecha en 'Fecha y hora de actividad'
+    (sin fecha de fin), el tipo de mantenimiento en 'Tipo_Mantenimiento' (vacío -> Preventivo) y el estado
+    se deduce del texto en 'Atributos'. Se agrupa por técnico ('Asignado a') para simular las horas,
+    igual que el listado 1.5."""
+    df = pd.read_excel(BytesIO(contenido), engine=_motor(contenido))
+    df["NUI_NORM"] = df["Nui"].map(normalizar_nui)
+    df["FECHA_REF"] = pd.to_datetime(df["Fecha y hora de actividad"], errors="coerce")
+    df["VERSION"] = "SYTEX"
+    df["UserName"] = df["Asignado a"]
+    return df
+
+
 def filtrar_mes(df: pd.DataFrame, anio: int, mes: int) -> pd.DataFrame:
     """Deja únicamente los registros cuya fecha cae en el mes y año seleccionados."""
     f = df["FECHA_REF"]
@@ -102,16 +115,23 @@ CAMPO_ESTADO_POR_TIPO_UC = {
 
 
 def tipo_mantenimiento(df: pd.DataFrame) -> pd.Series:
-    """1.5: columna Maintenance_Type. 2.0: columnas Preventivo / Correctivo marcadas con True."""
+    """1.5: columna Maintenance_Type. 2.0: columnas Preventivo / Correctivo marcadas con True.
+    SYTEX: columna Tipo_Mantenimiento (Preventivo / Correctivo)."""
     es_15 = df["VERSION"] == "1.5"
+    es_sytex = df["VERSION"] == "SYTEX"
     tipo_15 = df["Maintenance_Type"].astype("string").str.strip().str.capitalize() if "Maintenance_Type" in df else None
+    tipo_sytex = (df["Tipo_Mantenimiento"].astype("string").str.strip().str.capitalize()
+                  if "Tipo_Mantenimiento" in df else None)
     prev = df["Preventivo"].eq(True) if "Preventivo" in df else pd.Series(False, index=df.index)
     corr = df["Correctivo"].eq(True) if "Correctivo" in df else pd.Series(False, index=df.index)
-    tipo_20 = pd.Series(pd.NA, index=df.index, dtype="string")
-    tipo_20[corr] = "Correctivo"
-    tipo_20[prev] = "Preventivo"  # si vinieran ambos marcados, prevalece Preventivo
-    tipo = tipo_20 if tipo_15 is None else tipo_15.where(es_15, tipo_20)
-    return tipo.fillna("Preventivo")  # sin dato (ni Preventivo ni Correctivo marcado) -> se asume Preventivo
+    tipo = pd.Series(pd.NA, index=df.index, dtype="string")
+    tipo[corr] = "Correctivo"
+    tipo[prev] = "Preventivo"  # si vinieran ambos marcados, prevalece Preventivo
+    if tipo_sytex is not None:
+        tipo = tipo.where(~es_sytex, tipo_sytex)
+    if tipo_15 is not None:
+        tipo = tipo.where(~es_15, tipo_15)
+    return tipo.fillna("Preventivo")  # sin dato (ni Preventivo ni Correctivo marcado/vacío) -> se asume Preventivo
 
 
 def _a_estado(col: pd.Series) -> pd.Series:
@@ -129,25 +149,46 @@ def estado_entrega_20(df: pd.DataFrame) -> pd.Series:
     """Listado 2.0: estado general del NUI. Se busca primero en 'Entrega' (Funcional / No Funcional); si viene
     vacío o con 'undefined', se busca la palabra 'funcional' en 'Estado_Entrega_instalacion', 'Estado_Instalacion',
     'Hallazgos' y 'Observaciones', en ese orden (se revisa 'no funcional' antes que 'funcional' para no
-    confundirlas). Si ninguna trae información, se asume No Funcional, para que quede marcado y se revise."""
+    confundirlas). Si ninguna trae información, se asume No Funcional, para que quede marcado y se revise.
+    Solo aplica a filas del 2.0; las demás quedan vacías (sin dato) en el resultado."""
+    es20 = df["VERSION"] == "2.0"
     est = pd.Series(pd.NA, index=df.index, dtype="string")
     for campo in CAMPOS_TEXTO_ESTADO_20:
         if campo not in df.columns:
             continue
-        falta = est.isna()
+        falta = es20 & est.isna()
         if not falta.any():
             break
         texto = df.loc[falta, campo].astype("string").str.strip().str.lower()
         est.loc[falta[falta].index[texto.str.contains("no funcional", na=False)]] = "No Funcional"
-        falta = est.isna()
+        falta = es20 & est.isna()
         texto = df.loc[falta, campo].astype("string").str.strip().str.lower()
         est.loc[falta[falta].index[texto.str.contains("funcional", na=False)]] = "Funcional"
-    return est.fillna("No Funcional")  # sin ningún dato de estado: se deja marcado para revisión manual
+    est[es20 & est.isna()] = "No Funcional"  # sin ningún dato de estado: se deja marcado para revisión manual
+    return est
+
+
+def estado_sytex(df: pd.DataFrame) -> pd.Series:
+    """Listado SYTEX: estado general del NUI según el texto de 'Atributos' (se revisa 'no funcional' antes que
+    'funcional' para no confundirlas). Si no aparece ninguna, se asume No Funcional, para que se revise.
+    Solo aplica a filas del SYTEX; las demás quedan vacías (sin dato) en el resultado."""
+    es_sytex = df["VERSION"] == "SYTEX"
+    est = pd.Series(pd.NA, index=df.index, dtype="string")
+    if "Atributos" in df.columns:
+        falta = es_sytex & est.isna()
+        texto = df.loc[falta, "Atributos"].astype("string").str.strip().str.lower()
+        est.loc[falta[falta].index[texto.str.contains("no funcional", na=False)]] = "No Funcional"
+        falta = es_sytex & est.isna()
+        texto = df.loc[falta, "Atributos"].astype("string").str.strip().str.lower()
+        est.loc[falta[falta].index[texto.str.contains("funcional", na=False)]] = "Funcional"
+    est[es_sytex & est.isna()] = "No Funcional"
+    return est
 
 
 def estado_por_fila(df: pd.DataFrame) -> pd.Series:
     """df: filas ya expandidas con la base. 1.5: cada elemento toma el estado del campo que le corresponde
-    (CAMPO_ESTADO_POR_TIPO_UC). 2.0: todas las filas del NUI toman el estado general de 'Entrega'."""
+    (CAMPO_ESTADO_POR_TIPO_UC). 2.0 y SYTEX: todas las filas del NUI toman el estado general
+    ('Entrega' o el texto de 'Atributos', según la fuente)."""
     est = pd.DataFrame({c: _a_estado(df[f"_{c}"]) for c in CAMPOS_ESTADO_15})
     pos = df["TIPO_UC"].map(CAMPO_ESTADO_POR_TIPO_UC).map({c: i for i, c in enumerate(CAMPOS_ESTADO_15)})
     valido = pos.notna().to_numpy()
@@ -155,7 +196,8 @@ def estado_por_fila(df: pd.DataFrame) -> pd.Series:
     res = np.full(len(df), pd.NA, dtype=object)
     res[valido] = arr[np.flatnonzero(valido), pos[valido].astype(int).to_numpy()]
     est_15 = pd.Series(res, index=df.index, dtype="string")
-    return est_15.where(df["_VERSION"] == "1.5", df["_ESTADO_20"])
+    est_otro = df["_ESTADO_20"].where(df["_VERSION"] != "SYTEX", df["_ESTADO_SYTEX"])
+    return est_15.where(df["_VERSION"] == "1.5", est_otro)
 
 
 def _sin_tildes(texto: str) -> str:
@@ -260,12 +302,14 @@ def _programar_cuadrilla(tipos, rng):
 
 
 def _programar_grupo(grupo: pd.DataFrame, dia: pd.Timestamp, semilla: str):
-    """Mantenimientos 1.5 de un mismo técnico y día. Si no caben en una sola jornada respetando
+    """Mantenimientos de un mismo técnico (o versión) y día. Si no caben en una sola jornada respetando
     duraciones y desplazamientos, se reparten en cuadrillas que trabajan en paralelo."""
     rng = np.random.default_rng(zlib.crc32(semilla.encode()))
     zona = grupo["vereda"] if "vereda" in grupo else pd.Series(np.nan, index=grupo.index)
     if "Municipio" in grupo:  # el listado 2.0 no trae vereda: se agrupa por municipio
         zona = zona.fillna(grupo["Municipio"])
+    if "Proyecto" in grupo:  # el listado SYTEX no trae vereda ni municipio: se agrupa por proyecto
+        zona = zona.fillna(grupo["Proyecto"])
     g = grupo.assign(
         _vereda=zona.fillna("").astype(str),
         _ts=(pd.to_numeric(grupo["Id_Encuesta"].astype("string").str.split("-").str[-1], errors="coerce").fillna(0)
@@ -291,6 +335,8 @@ def _programar_grupo(grupo: pd.DataFrame, dia: pd.Timestamp, semilla: str):
 def _fechas_20_malas(mttos: pd.DataFrame) -> pd.Series:
     """True en los registros 2.0 cuya fecha fin falta, es anterior o igual al inicio (al redondear a minuto,
     incluye inicio y fin idénticos) o cae en otro día."""
+    if "Fecha_Inicio" not in mttos.columns:  # no se subió el listado 2.0
+        return pd.Series(False, index=mttos.index)
     ini = pd.to_datetime(mttos["Fecha_Inicio"]).dt.floor("min")
     fin = pd.to_datetime(mttos["Fecha_Finalizacion"]).dt.floor("min")
     malo = fin.isna() | (fin <= ini) | (fin.dt.normalize() != ini.dt.normalize())
@@ -300,8 +346,8 @@ def _fechas_20_malas(mttos: pd.DataFrame) -> pd.Series:
 def asignar_fechas(mttos: pd.DataFrame):
     """Devuelve (inicio, fin, resumen). Reproducible: el mismo mes siempre genera las mismas horas.
     - 2.0 con fechas consistentes: se toman tal cual (sin segundos).
-    - 1.5 (solo trae el día) y 2.0 con fin en otro día: horas simuladas con las reglas de jornada,
-      duración, desplazamiento y cuadrillas; el día es el de inicio."""
+    - 1.5, SYTEX (ninguno trae fecha de fin) y 2.0 con fin en otro día: horas simuladas con las reglas de
+      jornada, duración, desplazamiento y cuadrillas; el día es el de inicio."""
     inicio = pd.Series(pd.NaT, index=mttos.index, dtype="datetime64[ns]")
     fin = pd.Series(pd.NaT, index=mttos.index, dtype="datetime64[ns]")
     es20 = mttos["VERSION"] == "2.0"
@@ -315,7 +361,9 @@ def asignar_fechas(mttos: pd.DataFrame):
         dias = simular["FECHA_REF"].dt.normalize()
         for (version, usuario, dia), grupo in simular.groupby(
                 [simular["VERSION"], simular["UserName"].fillna(""), dias], sort=False):
-            semilla = f"{usuario}|{dia:%Y-%m-%d}" if version == "1.5" else f"2.0|{dia:%Y-%m-%d}"
+            semilla = (f"{usuario}|{dia:%Y-%m-%d}" if version == "1.5" else
+                       f"2.0|{dia:%Y-%m-%d}" if version == "2.0" else
+                       f"{version}|{usuario}|{dia:%Y-%m-%d}")
             ini_g, fin_g, k = _programar_grupo(grupo, dia, semilla)
             for etiqueta in ini_g:
                 inicio[etiqueta], fin[etiqueta] = ini_g[etiqueta], fin_g[etiqueta]
@@ -330,6 +378,8 @@ def asignar_fechas(mttos: pd.DataFrame):
 def fechas_20_inconsistentes(mttos: pd.DataFrame) -> pd.DataFrame:
     """Registros 2.0 cuya fecha fin es anterior o igual al inicio (al redondear a minuto) o cae en otro día."""
     m = mttos[mttos["VERSION"] == "2.0"]
+    if "Fecha_Inicio" not in m.columns or m.empty:  # no se subió el listado 2.0, o no hay filas del 2.0
+        return pd.DataFrame({"NUI": [], "FECHA INICIO": [], "FECHA FIN": []})
     ini = pd.to_datetime(m["Fecha_Inicio"]); fin = pd.to_datetime(m["Fecha_Finalizacion"])
     malo = fin.isna() | (fin.dt.floor("min") <= ini.dt.floor("min")) | (fin.dt.normalize() != ini.dt.normalize())
     return pd.DataFrame({"NUI": m.loc[malo, "NUI_NORM"], "FECHA INICIO": ini[malo], "FECHA FIN": fin[malo]})
@@ -346,6 +396,7 @@ def construir_it2(mttos: pd.DataFrame, base: pd.DataFrame, valores: pd.Series | 
         "MANTENIMIENTO REALIZADO": descripcion_por_nui(mttos).to_numpy(),
         "_VERSION": mttos["VERSION"].to_numpy(),
         "_ESTADO_20": estado_entrega_20(mttos).to_numpy(),
+        "_ESTADO_SYTEX": estado_sytex(mttos).to_numpy(),
         "FECHA INICIO": inicio.to_numpy(),
         "FECHA FIN": fin.to_numpy(),
     })
