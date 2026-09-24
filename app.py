@@ -5,7 +5,7 @@ import streamlit as st
 
 from it2 import (HOJA_15_DEFECTO, MESES, construir_it2, construir_it2_final, cruzar_con_base, excel_it2,
                  fechas_20_inconsistentes, filtrar_mes, hojas_excel, leer_base, leer_mtto_15, leer_mtto_20,
-                 unificar_por_nui, valores_inversion)
+                 leer_mtto_sytex, unificar_por_nui, valores_inversion)
 
 st.set_page_config(page_title="IT2 Mantenimientos", page_icon="🔧", layout="wide")
 
@@ -33,6 +33,11 @@ def _m20(contenido: bytes):
     return leer_mtto_20(contenido)
 
 
+@st.cache_data(show_spinner="Leyendo listado SYTEX...")
+def _sytex(contenido: bytes):
+    return leer_mtto_sytex(contenido)
+
+
 # ---------- Período ----------
 c1, c2 = st.columns(2)
 hoy = date.today()
@@ -48,9 +53,10 @@ if f_15:
     idx = hojas.index(HOJA_15_DEFECTO) if HOJA_15_DEFECTO in hojas else 0
     hoja_15 = st.selectbox("Hoja del listado 1.5", hojas, index=idx)
 f_20 = st.file_uploader("Listado de mantenimientos 2.0", type=["xls", "xlsx"])
+f_sytex = st.file_uploader("Listado de mantenimientos SYTEX (EJECUTADO_SYTEX)", type=["xls", "xlsx"])
 f_it2 = st.file_uploader("Excel IT2 (hoja 'Valor inversion', para la columna VALOR)", type=["xlsx"])
 
-if not f_base or not (f_15 or f_20):
+if not f_base or not (f_15 or f_20 or f_sytex):
     st.info("Sube la base y al menos un listado de mantenimientos para continuar.")
     st.stop()
 
@@ -63,6 +69,8 @@ if f_15:
     resultados.append(("1.5", _m15(f_15.getvalue(), hoja_15)))
 if f_20:
     resultados.append(("2.0", _m20(f_20.getvalue())))
+if f_sytex:
+    resultados.append(("SYTEX", _sytex(f_sytex.getvalue())))
 
 st.subheader(f"{MESES[mes]} {int(anio)}")
 cruzados, descartados = [], []
