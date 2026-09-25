@@ -532,9 +532,13 @@ def excel_it2(df: pd.DataFrame) -> bytes:
 
 
 def csv_it2(df: pd.DataFrame) -> bytes:
-    """CSV delimitado por comas, con las fechas en el mismo formato dd-mm-yyyy hh:mm del Excel."""
+    """CSV delimitado por comas, con las fechas en el mismo formato dd-mm-yyyy hh:mm del Excel
+    y el VALOR / Valor de la Intervencion con dos decimales."""
     df = df.copy()
     for col in ("FECHA INICIO", "FECHA FIN", "Fecha y hora de inicio", "Fecha y hora fin"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col]).dt.strftime("%d-%m-%Y %H:%M")
+    for col in ("VALOR", "Valor de la Intervencion"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col]).map(lambda v: f"{v:.2f}" if pd.notna(v) else "")
     return df.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
