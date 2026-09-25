@@ -94,7 +94,7 @@ COLUMNAS_IT2 = [
 ]
 
 # TIPO_UC -> TIPO_UC_9995
-HOMOLOGACION_TIPO_UC = {1: 5, 2: 6, 3: 7, 4: 10, 5: 14, 6: 21, 7: 21, 8: 21, 9: 21, 10: 21, 11: 19}
+HOMOLOGACION_TIPO_UC = {1: 5, 2: 6, 3: 7, 4: 10, 5: 13, 6: 21, 7: 21, 8: 21, 9: 21, 10: 21, 11: 19}
 DECO_TIPO_MTTO = {"Preventivo": 1, "Correctivo": 2}
 DECO_ESTADO = {"Funcional": 1, "No Funcional": 2}
 CAMPOS_ESTADO_15 = ["estadoGabinete", "paneles", "puestaTierra", "inversor", "bateria", "protecciones", "mppt", "soporte"]
@@ -457,6 +457,57 @@ def construir_it2_final(it2: pd.DataFrame) -> pd.DataFrame:
     return out[COLUMNAS_IT2_FINAL]
 
 
+# --- IT2 final: corrección de TIPO_UC_9995 y cruce de localidad con el IT1 -----
+COLUMNAS_IT1_REQUERIDAS = ["serial", "cod_localidad"]
+
+
+def leer_it1(contenido: bytes) -> pd.DataFrame:
+    """IT1: una fila por serial, con su cod_localidad. Se usa tal cual viene, sin normalizar el serial
+    (en el IT1 y en el IT2 se ha visto que coincide exactamente)."""
+    df = pd.read_excel(BytesIO(contenido), engine=_motor(contenido))
+    faltan = [c for c in COLUMNAS_IT1_REQUERIDAS if c not in df.columns]
+    if faltan:
+        raise ValueError(f"El IT1 no tiene la(s) columna(s): {', '.join(faltan)}.")
+    return df[["serial", "cod_localidad"]].drop_duplicates(subset="serial", keep="first")
+
+
+def detectar_formato_it2(df: pd.DataFrame) -> str:
+    """'editable' (17 columnas) o 'final' (9 columnas homologadas); error si no coincide con ninguno."""
+    if set(COLUMNAS_IT2).issubset(df.columns):
+        return "editable"
+    if set(COLUMNAS_IT2_FINAL).issubset(df.columns):
+        return "final"
+    raise ValueError("El archivo no tiene las columnas de un IT2 editable ni de un IT2 final. "
+                      "Revisa que sea el archivo correcto.")
+
+
+def a_formato_final(df: pd.DataFrame) -> pd.DataFrame:
+    """Acepta el IT2 editable (17 columnas) o el final (9), y siempre devuelve las 9 columnas homologadas."""
+    formato = detectar_formato_it2(df)
+    return construir_it2_final(df) if formato == "editable" else df[COLUMNAS_IT2_FINAL].copy()
+
+
+def corregir_tipo_elemento(df_final: pd.DataFrame):
+    """En 'Tipo de Elemento', cambia cualquier 14 (poste, homologación anterior) por 13.
+    Devuelve (dataframe corregido, cantidad de filas cambiadas)."""
+    df_final = df_final.copy()
+    es_14 = df_final["Tipo de Elemento"] == 14
+    df_final.loc[es_14, "Tipo de Elemento"] = 13
+    return df_final, int(es_14.sum())
+
+
+def cruzar_localidad_it1(df_final: pd.DataFrame, it1: pd.DataFrame):
+    """Reemplaza 'Codigo Localidad' por el cod_localidad del IT1, cruzando por 'Serial del Elemento' = serial.
+    Donde el serial no aparece en el IT1, se deja el código que ya traía el IT2.
+    Devuelve (dataframe con la localidad reemplazada, seriales sin cruce)."""
+    df_final = df_final.copy()
+    mapa = it1.set_index("serial")["cod_localidad"]
+    nuevo = df_final["Serial del Elemento"].map(mapa)
+    sin_cruce = df_final.loc[nuevo.isna(), "Serial del Elemento"]
+    df_final["Codigo Localidad"] = pd.to_numeric(nuevo.where(nuevo.notna(), df_final["Codigo Localidad"])).astype("Int64")
+    return df_final, sin_cruce
+
+
 def excel_it2(df: pd.DataFrame) -> bytes:
     """Excel editable: encabezado en negrita, primera fila fija y anchos de columna ajustados."""
     from openpyxl.styles import Font
@@ -478,3 +529,12 @@ def excel_it2(df: pd.DataFrame) -> bytes:
                 for celda in ws[get_column_letter(i)][1:]:
                     celda.number_format = "dd-mm-yyyy hh:mm"
     return buf.getvalue()
+
+
+def csv_it2(df: pd.DataFrame) -> bytes:
+    """CSV delimitado por comas, con las fechas en el mismo formato dd-mm-yyyy hh:mm del Excel."""
+    df = df.copy()
+    for col in ("FECHA INICIO", "FECHA FIN", "Fecha y hora de inicio", "Fecha y hora fin"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col]).dt.strftime("%d-%m-%Y %H:%M")
+    return df.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
