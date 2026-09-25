@@ -1,4 +1,5 @@
 from datetime import date
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -38,7 +39,7 @@ def _sytex(contenido: bytes):
 
 @st.cache_data(show_spinner="Leyendo archivo IT2...")
 def _it2_subido(contenido: bytes):
-    return pd.read_excel(contenido, engine="openpyxl")
+    return pd.read_excel(BytesIO(contenido), engine="openpyxl")
 
 
 @st.cache_data(show_spinner="Leyendo IT1...")
